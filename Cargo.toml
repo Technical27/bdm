@@ -1,0 +1,12 @@
+[package]
+name = "bdm"
+version = "0.1.0"
+authors = ["Aamaruvi Yogamani <38222826+Technical27@users.noreply.github.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+handlebars = "3.2"
+git2 = "0.13"
+clap = "3.0.0-beta.1"
