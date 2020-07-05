@@ -103,12 +103,14 @@ fn main() -> Result<(), GitError> {
             let dirs = repo_dir.join(file_dirs);
             println!("{:?}", dirs);
 
-            fs::create_dir_all(dirs.clone()).unwrap();
+            if !dirs.join(file_name).exists() {
+                fs::create_dir_all(dirs.clone()).unwrap();
 
-            fs::copy(opts.file.clone(), dirs.join(file_name)).unwrap();
-            fs::remove_file(opts.file.clone()).unwrap();
+                fs::copy(opts.file.clone(), dirs.join(file_name)).unwrap();
+                fs::remove_file(opts.file.clone()).unwrap();
 
-            softlink(&dirs.join(file_name), Path::new(&opts.file));
+                softlink(&dirs.join(file_name), Path::new(&opts.file));
+            }
 
             index.add_path(&file_dirs.join(file_name))?;
             index.write()?;
