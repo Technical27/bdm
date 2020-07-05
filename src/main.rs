@@ -1,11 +1,12 @@
 mod commands;
 
 use clap::Clap;
-use git2::{Cred, Error as GitError, IndexAddOption, Repository};
+use git2::{Cred, Error as GitError, Repository};
 use std::env;
+use std::fs;
 use std::io;
 use std::io::prelude::*;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Clap)]
 #[clap(version = "0.1.0")]
@@ -26,7 +27,7 @@ enum SubCommand {
 
 #[derive(Clap)]
 struct AddOpts {
-    files: Vec<String>,
+    file: String,
 }
 #[derive(Clap)]
 struct CommitOpts {
@@ -55,11 +56,15 @@ fn get_home_dir() -> PathBuf {
 /// Open the default git repo
 fn get_repo() -> Result<Repository, GitError> {
     let home_dir = get_home_dir();
-    let repo_dir = home_dir.join(".config/bdm/repo.git");
+    let repo_dir = home_dir.join(".config/bdm/repo");
 
     let repo = Repository::open(repo_dir)?;
-    repo.set_workdir(&home_dir, false)?;
     Ok(repo)
+}
+
+#[cfg(unix)]
+fn softlink(src: &Path, dst: &Path) {
+    std::os::unix::fs::symlink(src, dst).unwrap();
 }
 
 fn main() -> Result<(), GitError> {
@@ -68,9 +73,9 @@ fn main() -> Result<(), GitError> {
     match opts.cmd {
         SubCommand::Init => {
             let home_dir = get_home_dir();
-            let repo_dir = home_dir.join(".config/bdm/repo.git");
+            let repo_dir = home_dir.join(".config/bdm/repo");
 
-            let repo = Repository::init_bare(repo_dir)?;
+            let repo = Repository::init(repo_dir)?;
 
             let sig = repo.signature()?;
             let tree_id = {
@@ -84,8 +89,28 @@ fn main() -> Result<(), GitError> {
         SubCommand::Add(opts) => {
             let repo = get_repo()?;
             let mut index = repo.index()?;
+            let home_dir = get_home_dir();
+            let repo_dir = home_dir.join(".config/bdm/repo");
 
-            index.add_all(opts.files, IndexAddOption::DEFAULT, None)?;
+            let file_dirs = Path::new(&opts.file)
+                .strip_prefix(home_dir)
+                .unwrap()
+                .parent()
+                .unwrap();
+            let file_name = Path::new(&opts.file).file_name().unwrap();
+            println!("{:?}", file_name);
+
+            let dirs = repo_dir.join(file_dirs);
+            println!("{:?}", dirs);
+
+            fs::create_dir_all(dirs.clone()).unwrap();
+
+            fs::copy(opts.file.clone(), dirs.join(file_name)).unwrap();
+            fs::remove_file(opts.file.clone()).unwrap();
+
+            softlink(&dirs.join(file_name), Path::new(&opts.file));
+
+            index.add_path(&file_dirs.join(file_name))?;
             index.write()?;
         }
         SubCommand::Commit(opts) => {
