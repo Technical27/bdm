@@ -19,6 +19,7 @@ struct Options {
 enum SubCommand {
     Init,
     Add(AddOpts),
+    Remove(RemoveOpts),
     Commit(CommitOpts),
     Remote(RemoteOpts),
     Push,
@@ -27,6 +28,10 @@ enum SubCommand {
 
 #[derive(Clap)]
 struct AddOpts {
+    file: String,
+}
+#[derive(Clap)]
+struct RemoveOpts {
     file: String,
 }
 #[derive(Clap)]
@@ -63,8 +68,13 @@ fn get_repo() -> Result<Repository, GitError> {
 }
 
 #[cfg(unix)]
-fn softlink(src: &Path, dst: &Path) {
-    std::os::unix::fs::symlink(src, dst).unwrap();
+fn softlink(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(src, dst)
+}
+
+#[cfg(windows)]
+fn softlink(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_file(src, dst)
 }
 
 fn main() -> Result<(), GitError> {
@@ -84,35 +94,63 @@ fn main() -> Result<(), GitError> {
             };
             let tree = repo.find_tree(tree_id)?;
 
-            repo.commit(Some("HEAD"), &sig, &sig, "Initial commit", &tree, &[])?;
+            repo.commit(Some("HEAD"), &sig, &sig, "bdm init", &tree, &[])?;
         }
         SubCommand::Add(opts) => {
+            let real_file = Path::new(&opts.file);
+
+            if real_file.is_dir() {
+                eprintln!("Don't add directories, add individual files");
+                return Ok(());
+            }
+
             let repo = get_repo()?;
             let mut index = repo.index()?;
             let home_dir = get_home_dir();
             let repo_dir = home_dir.join(".config/bdm/repo");
 
-            let file_dirs = Path::new(&opts.file)
-                .strip_prefix(home_dir)
-                .unwrap()
-                .parent()
-                .unwrap();
-            let file_name = Path::new(&opts.file).file_name().unwrap();
-            println!("{:?}", file_name);
-
+            let file_dirs = real_file.strip_prefix(home_dir).unwrap().parent().unwrap();
+            let file_name = real_file.file_name().unwrap();
             let dirs = repo_dir.join(file_dirs);
-            println!("{:?}", dirs);
 
             if !dirs.join(file_name).exists() {
                 fs::create_dir_all(dirs.clone()).unwrap();
 
-                fs::copy(opts.file.clone(), dirs.join(file_name)).unwrap();
-                fs::remove_file(opts.file.clone()).unwrap();
+                fs::copy(real_file, dirs.join(file_name)).unwrap();
+                fs::remove_file(real_file).unwrap();
 
-                softlink(&dirs.join(file_name), Path::new(&opts.file));
+                softlink(&dirs.join(file_name), real_file).unwrap();
             }
 
             index.add_path(&file_dirs.join(file_name))?;
+            index.write()?;
+        }
+        SubCommand::Remove(opts) => {
+            let repo = get_repo()?;
+            let mut index = repo.index()?;
+            let home_dir = get_home_dir();
+            let repo_dir = home_dir.join(".config/bdm/repo");
+            let real_file = Path::new(&opts.file);
+
+            let file_dirs = real_file.strip_prefix(home_dir).unwrap().parent().unwrap();
+            let file_name = real_file.file_name().unwrap();
+            let dirs = repo_dir.join(file_dirs);
+
+            let repo_file = dirs.join(file_name);
+
+            if !dirs.join(file_name).exists() {
+                eprintln!("file doesn't exist in repo");
+                return Ok(());
+            }
+
+            // Remove origional symlink
+            fs::remove_file(&real_file).unwrap();
+            // Copy the real file back
+            fs::copy(&repo_file, &real_file).unwrap();
+            // Delete file in repo
+            fs::remove_file(&repo_file).unwrap();
+
+            index.remove_path(&file_dirs.join(file_name))?;
             index.write()?;
         }
         SubCommand::Commit(opts) => {
@@ -178,6 +216,10 @@ fn main() -> Result<(), GitError> {
 
             let (analysis, _) = repo.merge_analysis(&[&commit])?;
 
+            let head = repo.reference_to_annotated_commit(&repo.head()?)?;
+            let local_tree = repo.find_commit(head.id())?.tree()?;
+            let remote_tree = repo.find_commit(commit.id())?.tree()?;
+
             let refname = "refs/heads/master";
             if analysis.is_fast_forward() {
                 match repo.find_reference(refname) {
@@ -205,9 +247,6 @@ fn main() -> Result<(), GitError> {
                     }
                 }
             } else if analysis.is_normal() {
-                let head = repo.reference_to_annotated_commit(&repo.head()?)?;
-                let local_tree = repo.find_commit(head.id())?.tree()?;
-                let remote_tree = repo.find_commit(commit.id())?.tree()?;
                 let ancestor = repo
                     .find_commit(repo.merge_base(head.id(), commit.id())?)?
                     .tree()?;
@@ -236,7 +275,24 @@ fn main() -> Result<(), GitError> {
                 // Set working tree to match head.
                 repo.checkout_head(None)?;
             } else {
-                println!("nothing to do...")
+                println!("nothing to do...");
+            }
+
+            let diff = repo.diff_tree_to_tree(
+                Some(&local_tree),
+                Some(&remote_tree),
+                Some(
+                    git2::DiffOptions::new()
+                        .include_untracked(false)
+                        .include_unmodified(false),
+                ),
+            )?;
+
+            for delta in diff.deltas() {
+                let new_file = delta.new_file();
+                if new_file.exists() {
+                    println!("diff: {:?}", delta.new_file().path());
+                }
             }
         }
     }
